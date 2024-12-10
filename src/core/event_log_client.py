@@ -2,14 +2,13 @@ import re
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
-
 import clickhouse_connect
 import structlog
 from clickhouse_connect.driver.exceptions import DatabaseError
 from django.conf import settings
 from django.utils import timezone
-
 from core.base_model import Model
+from .models import Outbox
 
 logger = structlog.get_logger(__name__)
 
@@ -19,7 +18,6 @@ EVENT_LOG_COLUMNS = [
     'environment',
     'event_context',
 ]
-
 
 class EventLogClient:
     def __init__(self, client: clickhouse_connect.driver.Client) -> None:
@@ -44,10 +42,7 @@ class EventLogClient:
         finally:
             client.close()
 
-    def insert(
-        self,
-        data: list[Model],
-    ) -> None:
+    def insert(self, data: list[Model]) -> None:
         try:
             self._client.insert(
                 data=self._convert_data(data),
@@ -58,7 +53,7 @@ class EventLogClient:
         except DatabaseError as e:
             logger.error('unable to insert data to clickhouse', error=str(e))
 
-    def query(self, query: str) -> Any:  # noqa: ANN401
+    def query(self, query: str) -> Any:
         logger.debug('executing clickhouse query', query=query)
 
         try:
@@ -82,3 +77,20 @@ class EventLogClient:
         result = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', event_name)
         return re.sub('([a-z0-9])([A-Z])', r'\1_\2', result).lower()
 
+    def process_outbox(self) -> None:
+        events_to_process = Outbox.objects.filter(processed_at__isnull=True, failed=False)
+        events_data = list(events_to_process)
+        self.insert(events_data)
+        for event in events_to_process:
+            try:
+                event.mark_as_processed()
+            except Exception as e:
+                event.mark_as_failed()
+                logger.error('failed to mark event as processed', error=str(e))
+
+
+def add_to_outbox(event_type, payload):
+    """
+    Функция для добавления события в транзакционный Outbox.
+    """
+    Outbox.objects.create(event_type=event_type, payload=payload)

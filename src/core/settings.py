@@ -30,6 +30,7 @@ INSTALLED_APPS = [
 
     # project apps
     'users',
+    'core'
 ]
 
 MIDDLEWARE = [
